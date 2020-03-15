@@ -131,3 +131,11 @@ create table category (
 insert into category(sub_category_id, parent_category_id) values(1038, 1);
 insert into category(sub_category_id, parent_category_id) values(91244, 1);
 insert into category(sub_category_id, parent_category_id) values(44712, 1);
+insert into category(sub_category_id, parent_category_id) values(2,2);
+insert into category(sub_category_id, parent_category_id) values(3,3);
+insert into category(sub_category_id, parent_category_id) values(4,4);
+insert into category(sub_category_id, parent_category_id) values(5,5);
+insert into category(sub_category_id, parent_category_id) values(6,6);
+insert into category(sub_category_id, parent_category_id) values(7,7);
+insert into category(sub_category_id, parent_category_id) values(8,8);
+insert into category(sub_category_id, parent_category_id) values(9,9);
