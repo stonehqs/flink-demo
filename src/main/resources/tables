@@ -1,0 +1,133 @@
+CREATE TABLE user_behavior (
+    userId BIGINT,
+    itemId BIGINT,
+    categoryId BIGINT,
+    behavior STRING,
+    ts TIMESTAMP(3),
+    proctime as PROCTIME(),   -- 通过计算列产生一个处理时间列
+    WATERMARK FOR ts as ts - INTERVAL '5' SECOND  -- 在ts上定义watermark，ts成为事件时间列
+) WITH (
+    'connector.type' = 'kafka',  -- 使用 kafka connector
+    'connector.version' = 'universal',  -- kafka 版本，universal 支持 0.11 以上的版本
+    'connector.topic' = 'user_behaviors',  -- kafka topic
+    'connector.startup-mode' = 'earliest-offset',  -- 从起始 offset 开始读取
+    'connector.properties.zookeeper.connect' = 'localhost:2181',  -- zookeeper 地址
+    'connector.properties.bootstrap.servers' = 'localhost:9092',  -- kafka broker 地址
+    'format.type' = 'json'  -- 数据源格式为 json
+);
+
+
+CREATE TABLE buy_cnt_per_hour (
+    hour_of_day BIGINT,
+    buy_cnt BIGINT
+) WITH (
+    'connector.type' = 'elasticsearch', -- 使用 elasticsearch connector
+    'connector.version' = '6',  -- elasticsearch 版本，6 能支持 es 6+ 以及 7+ 的版本
+    'connector.hosts' = 'http://localhost:9200',  -- elasticsearch 地址
+    'connector.index' = 'buy_cnt_per_hour',  -- elasticsearch 索引名，相当于数据库的表名
+    'connector.document-type' = 'user_behavior', -- elasticsearch 的 type，相当于数据库的库名
+    'connector.bulk-flush.max-actions' = '1',  -- 每条数据都刷新
+    'format.type' = 'json',  -- 输出数据格式 json
+    'update-mode' = 'append'
+);
+
+
+INSERT INTO buy_cnt_per_hour
+SELECT HOUR(TUMBLE_START(ts, INTERVAL '1' HOUR)), COUNT(*)
+FROM user_behavior
+WHERE behavior = 'buy'
+GROUP BY TUMBLE(ts, INTERVAL '1' HOUR);
+
+
+CREATE TABLE cumulative_uv (
+    time_str STRING,
+    uv BIGINT
+) WITH (
+    'connector.type' = 'elasticsearch',
+    'connector.version' = '6',
+    'connector.hosts' = 'http://localhost:9200',
+    'connector.index' = 'cumulative_uv',
+    'connector.document-type' = 'user_behavior',
+    'format.type' = 'json',
+    'update-mode' = 'upsert'
+);
+
+
+CREATE VIEW uv_per_10min AS
+SELECT
+  MAX(SUBSTR(DATE_FORMAT(ts, 'HH:mm'),1,4) || '0') OVER w AS time_str,
+  COUNT(DISTINCT userId) OVER w AS uv
+FROM user_behavior
+WINDOW w AS (ORDER BY proctime ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW);
+
+
+INSERT INTO cumulative_uv
+SELECT time_str, MAX(uv)
+FROM uv_per_10min
+GROUP BY time_str;
+
+
+CREATE TABLE category_dim (
+    sub_category_id BIGINT,  -- 子类目
+    parent_category_id BIGINT -- 顶级类目
+) WITH (
+    'connector.type' = 'jdbc',
+    'connector.url' = 'jdbc:mysql://localhost:3306/flink',
+    'connector.table' = 'category',
+    'connector.driver' = 'com.mysql.jdbc.Driver',
+    'connector.username' = 'root',
+    'connector.password' = 'root',
+    'connector.lookup.cache.max-rows' = '5000',
+    'connector.lookup.cache.ttl' = '10min'
+);
+
+
+CREATE TABLE top_category (
+    category_name STRING,  -- 类目名称
+    buy_cnt BIGINT  -- 销量
+) WITH (
+    'connector.type' = 'elasticsearch',
+    'connector.version' = '6',
+    'connector.hosts' = 'http://localhost:9200',
+    'connector.index' = 'top_category',
+    'connector.document-type' = 'user_behavior',
+    'format.type' = 'json',
+    'update-mode' = 'upsert'
+);
+
+
+
+CREATE VIEW rich_user_behavior AS
+SELECT U.userId, U.itemId, U.behavior,
+  CASE C.parent_category_id
+    WHEN 1 THEN '服饰鞋包'
+    WHEN 2 THEN '家装家饰'
+    WHEN 3 THEN '家电'
+    WHEN 4 THEN '美妆'
+    WHEN 5 THEN '母婴'
+    WHEN 6 THEN '3C数码'
+    WHEN 7 THEN '运动户外'
+    WHEN 8 THEN '食品'
+    ELSE '其他'
+  END AS category_name
+FROM user_behavior AS U LEFT JOIN category_dim FOR SYSTEM_TIME AS OF U.proctime AS C
+ON U.categoryId = C.sub_category_id;
+
+
+INSERT INTO top_category
+SELECT category_name, COUNT(*) buy_cnt
+FROM rich_user_behavior
+WHERE behavior = 'buy'
+GROUP BY category_name;
+
+
+create table category (
+    sub_category_id bigint(20),
+    parent_category_id bigint(20)
+);
+
+
+
+insert into category(sub_category_id, parent_category_id) values(1038, 1);
+insert into category(sub_category_id, parent_category_id) values(91244, 1);
+insert into category(sub_category_id, parent_category_id) values(44712, 1);
